@@ -4,11 +4,14 @@
   Author:  Heartr
 */
 #include <ESP8266WiFi.h>
+#include <WebSocketClient.h>
 #include <ESP8266WebServer.h>
+#include <ShiftRegister74HC595.h>
 #include <EEPROM.h>
 #include "CaptivePortal.h"
 
 ESP8266WebServer server(80);
+WebSocketClient webSocketClient;
 
 CaptivePortal captivePortal;
 
@@ -19,7 +22,7 @@ const char* apssid = "Mail Config";
 const char* appwd = "supersecure";
 
 String hostname2 = "MailNoSpace"; // hostname variable is reserved for the actuall hostname of the device.
-byte requestDelay = 20;
+byte requestDelay = 1;
 
 const String html_head = "<!DOCTYPE html> <html lang=\"en\"> <head> <meta charset=\"utf-8\"> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" user-scalable=\"no\" /> <title>Mail Config</title> <style> input[type=text], input[type=password] { width: 100%; padding: 4px; margin: 4px; } input[type=submit] { margin: 4px; } form:first-of-type { padding-top: 0; } form { padding: 40px; padding-bottom: 0; } .container { max-width: 450px; margin: 0 auto; } h1, p { font-family: helvetica; font-weight: 100; color: rgba(0, 0, 0, 0.85); margin-top: 0; } h1 { margin-top: 45px; } p { font-size: .9em; } </style> </head>";
 const String html_get_1 = " <body> <div class=\"container\"> <h1> Configuration page </h1> <form action=\"/\" method=\"post\"> <input type=\"text\" name=\"ssid\" value=\"\" placeholder=\"Network name\" /> <input type=\"password\" name=\"pwd\" value=\"\" placeholder=\"Password\" /> <input type=\"submit\" value=\"Submit\" /> <p> On submit the wifi module will try to connect to the submited network, if it succeeds the module will close this network (Mail Config). </p> </form> <form action=\"/\" method=\"post\"> <input type=\"text\" name=\"hostname\" placeholder=\"Hostname\" /> <input type=\"submit\" value=\"Submit\" /> <p> This is the name known to the router when connected. Current hostname is ";
@@ -30,12 +33,15 @@ const String html_get_4 = "). </p> </form> </div> </body> </html>";
 const String html_post_error = "<body> <form action=\"/\" method=\"get\"> <h1>Something went wrong!</h1> <p> It could be anything... </p> <input value=\"Back\" type=\"submit\" /> </form> </body> </html>";
 const String html_post_success = "<body> <form action=\"/\" method=\"get\"> <h1>Probably success!</h1> <p> Just wait a couple of seconds, if the hotspot still exists re enter the network name and password. </p> <input value=\"Back\" type=\"submit\" /> </form> </body> </html>";
 
-const char* host = "mail.adamh.se";
-const char* path = "/all";
+char* host = "number.adamh.se";
+const char* numberUrl = "one";
+
 const IPAddress apIP(192, 168, 1, 1);
 const IPAddress staIP(192, 168, 1, 137);
 
-const int dataPin = 2;
+
+ShiftRegister74HC595 sr(1, 0, 1, 2); // (number of shift registers, data pin, clock pin, latch pin)
+
 bool login = false;
 String NL = "\r\n";
 int mailflags = 0, mailflags_n = 0;
@@ -51,20 +57,6 @@ String view_post_e() {
   return html_head + html_post_error;
 }
 
-void sendPulse(bool high) {
-  digitalWrite(dataPin, HIGH);
-  delay(2);
-  if (high) delay(4); // May need to change this.
-  digitalWrite(dataPin, LOW);
-}
-
-void sendInt(int n) {
-  for (int t = 1; t != 0b100000 ; t <<= 1) { // Send 8 bits
-    sendPulse(bool(n & t));
-    delay(2);
-  }
-}
-
 boolean isValidNumber(String str) {
   for (byte i = 0; i < str.length(); i++)
     if (!isDigit(str.charAt(i))) return false;
@@ -72,80 +64,7 @@ boolean isValidNumber(String str) {
   return true;
 }
 
-void downloadData() {
-  WiFiClient client;
-
-  if (!client.connect(host, 80)) {
-    Serial.println("Connection failed");
-    return;
-  }
-
-  client.print("GET " + String(path) + " HTTP/1.1" + NL + "Host: " + String(host) + NL + "Connection: close" + NL + NL);
-
-  int timeout = 50;
-  while (!client.available() && timeout-- > 0) delay(200); // worst 10s
-
-  if (timeout <= 0) {
-    Serial.println("Could not connect to host, connection timeout.");
-    client.stop();
-    return;
-  }
-
-  // Read all the lines of the reply from server and print them to Serial
-  String line = client.readStringUntil('\r');
-  if (line.length() < 12 || line.substring(9, 12) != "200") { // line.length ? this needs testing!!
-    Serial.println("Cant reach " + String(host) + String(path) + " error code: " + line.substring(9, 12));
-    client.stop();
-    return;
-  }
-
-  // read headers
-  timeout = 500;
-  while (client.available() && timeout-- > 0) {
-    line = client.readStringUntil('\r');
-    if (line == "\n") {
-      line = client.readStringUntil('\r');
-      break;
-    }
-    delay(10);
-  }
-
-  if (timeout < 0) {
-    Serial.println("Inavlid response from server, too much data");
-    client.stop();
-    return;
-  }
-  ////
-
-  line = client.readStringUntil('\r');
-  line = line.substring(1);
-
-  delay(100); // WDT?
-
-  if (line.length() < 1 || !isValidNumber(line)) {
-    Serial.println("Invalid response from server. (" + line + ")");
-    client.stop();
-    return;
-  }
-  if (mailflags == line.toInt()) {
-    mailflags_n++;
-    if (mailflags_n >= 4) {
-      Serial.println("Response from server, value unchanged");
-      client.stop();
-      return;
-    }
-  } else {
-    mailflags_n = 0;
-  }
-
-  mailflags = line.toInt();
-
-  Serial.println("Response from server (mail flags): " + line);
-  sendInt(mailflags);
-  client.stop();
-}
-
-void write_EEPROM() {
+void write_EEPROM(String stassid, String stapwd, String hostname2, byte requestDelay) {
   Serial.println("Writing EEPROM bytes: " + stassid + " " + stapwd + " " + hostname2 + " " + requestDelay);
 
   // stassid
@@ -180,7 +99,7 @@ void write_EEPROM() {
   Serial.println("Done");
 }
 
-bool read_EEPROM() {
+bool read_EEPROM(String &stassid, String &stapwd, String &hostname2, byte &requestDelay) {
   Serial.println("Reading EEPROM");
   char c;
 
@@ -324,6 +243,56 @@ void handle_config_post() {
 }
 
 
+WiFiClient client;
+
+bool connectWebSocket() {
+
+  if (client.connect(host, 80)) {
+    Serial.println("Connected");
+  } else {
+    Serial.println("Connection failed.");
+    return false;
+  }
+
+  webSocketClient.path = "/";
+  webSocketClient.host = host;
+
+  if (webSocketClient.handshake(client)) {
+    Serial.println("Handshake successful");
+  } else {
+    Serial.println("Handshake failed.");
+    return false;
+  }
+
+
+  webSocketClient.sendData("{'NumberUrl':'" + String(numberUrl) + "'}");
+  return true;
+}
+
+
+void downloadData() {
+  if (!client.connected()) {
+    if (!connectWebSocket())
+      return;
+  }
+
+  String data;
+  webSocketClient.getData(data);
+  //{"NumberUrl":"asd","BitName":null,"Value":1}
+
+  if (data.length() > 0) {
+    // parse data here.
+    data = data.substring(data.indexOf("Value\":") + String("Value\":").length());
+    data = data.substring(0, data.indexOf("}"));
+    if (!isValidNumber(data))
+      return;
+
+    uint8_t pinValues[] = { data.toInt() };
+    sr.setAll(pinValues); // We only have one shift register
+  }
+}
+
+
 void setup() {
 
   Serial.begin(115200);
@@ -335,8 +304,6 @@ void setup() {
 
   EEPROM.begin(32 + 64 + 32 + 1); // max: 4096. wifi name + wifi pass + hostname + request delay
 
-  pinMode(2, OUTPUT);
-  digitalWrite(dataPin, LOW);
 
   WiFi.disconnect(); // Clear previous config.
   delay(100);
@@ -355,7 +322,7 @@ void setup() {
   server.begin();
 
   int start, t, c;
-  bool len = read_EEPROM();
+  bool len = read_EEPROM(stassid, stapwd, hostname2, requestDelay);
 
   start = t = c = millis();
   while (!(((c - start > 1000 * 60 * 5) && len) || login)) {
@@ -373,7 +340,7 @@ void setup() {
   Serial.println("");
   Serial.println("WiFi connected, closing AP and DNS");
 
-  write_EEPROM();
+  write_EEPROM(stassid, stapwd, hostname2, requestDelay);
 
   captivePortal.stop();
   WiFi.softAPdisconnect();
@@ -398,9 +365,12 @@ void setup() {
     Serial.println("No internet");
   }
 
-  sendInt(0);
   delay(3000);
+
+  connectWebSocket();
+
 }
+
 
 void loop() {
   downloadData();
@@ -409,6 +379,26 @@ void loop() {
   //delay(1000); // Once in a time there was a bug in the standard esp library.
   Serial.println("Waking up");
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
