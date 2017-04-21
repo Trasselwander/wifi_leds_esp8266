@@ -18,7 +18,7 @@ String stapwd;
 const char* apssid = "Mail Config";
 const char* appwd = "supersecure";
 
-String hostname2 = "MailNoSpace";
+String hostname2 = "MailNoSpace"; // hostname variable is reserved for the actuall hostname of the device.
 byte requestDelay = 20;
 
 const String html_head = "<!DOCTYPE html> <html lang=\"en\"> <head> <meta charset=\"utf-8\"> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" user-scalable=\"no\" /> <title>Mail Config</title> <style> input[type=text], input[type=password] { width: 100%; padding: 4px; margin: 4px; } input[type=submit] { margin: 4px; } form:first-of-type { padding-top: 0; } form { padding: 40px; padding-bottom: 0; } .container { max-width: 450px; margin: 0 auto; } h1, p { font-family: helvetica; font-weight: 100; color: rgba(0, 0, 0, 0.85); margin-top: 0; } h1 { margin-top: 45px; } p { font-size: .9em; } </style> </head>";
@@ -147,7 +147,7 @@ void downloadData() {
 
 void write_EEPROM() {
   Serial.println("Writing EEPROM bytes: " + stassid + " " + stapwd + " " + hostname2 + " " + requestDelay);
-  
+
   // stassid
   for (int i = 0; i < stassid.length(); ++i)
     EEPROM.write(i, stassid[i]);
@@ -188,6 +188,7 @@ bool read_EEPROM() {
   for (int i = 0; i < 32; ++i) { // According to IEEE standards.
     c = char(EEPROM.read(i));
     if (c != 0) essid += c;
+    else break;
   }
 
   Serial.print("SSID: ");
@@ -197,6 +198,7 @@ bool read_EEPROM() {
   for (int i = 32; i < 96; ++i) { // 63 chars, I think, but who knows
     c = char(EEPROM.read(i));
     if (c != 0) epwd += c;
+    else break;
   }
 
   Serial.print("PWD: ");
@@ -206,6 +208,7 @@ bool read_EEPROM() {
   for (int i = 96; i < 128; ++i) {
     c = char(EEPROM.read(i));
     if (c != 0) ehostname2 += c;
+    else break;
   }
 
   Serial.print("Hostname: ");
